@@ -409,6 +409,8 @@ rlog_df <- analyzeRNA::annotate_biomart(
 )
 mgis <- butyrate_vs_control$MGI_Symbol
 rlog_filtered <- dplyr::filter(rlog_df, MGI_Symbol %in% mgis)
+
+# export_genelist(rlog_df, "rlogNormalizedCounts.csv")
 ```
 
 # Filter & sort significant DEGs
