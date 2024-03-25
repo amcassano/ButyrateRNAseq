@@ -85,6 +85,7 @@ BiocManager::install(c(
     "biomaRt",
     "ashr"
 ))
+BiocManager::install("pcaExplorer")
 BiocManager::install("enrichplot")
 ```
 
@@ -135,6 +136,8 @@ devtools::install_github("JamesJoly/DGSEA")
 devtools::install_github("amcassano/RNAseqAnalysisPackage")
 library(DGSEA)
 library(analyzeRNA)
+library(pcaExplorer)
+library(PCAtools)
 ```
 
 ## Set working directory
@@ -498,12 +501,46 @@ analyzeRNA::sample_distances(rlog_norm, anno_colors, meta)
 
 ```{r PCA_analysis, eval=TRUE}
 # run the function
+pca_data <- DESeq2::plotPCA(rlog_norm,
+    intgroup = "Group", returnData = TRUE
+)
+# get the percent variation of the PCA data so that we can add that to the plot
+percent_variation <- round(100 * attr(pca_data, "percentVar"))
+labs <- plot_aes$labels
+outlines <- plot_aes$outlineID
+fills <- plot_aes$fillID
+shapes <- plot_aes$shapeID
+
+pca_plot <-
+    ggplot2::ggplot(pca_data, ggplot2::aes(x = PC1, y = PC2, color = Group, shape = Group, fill = Group)) +
+    ggplot2::geom_point(size = 3.5, stroke = 2.25) +
+    ggplot2::geom_point(size = 3.5, stroke = 2) +
+    ggplot2::scale_color_manual(labels = labs, values = outlines, name = "Group: ") +
+    ggplot2::scale_fill_manual(labels = labs, values = fills, name = "Group: ") +
+    ggplot2::scale_shape_manual(labels = labs, values = shapes, name = "Group: ") +
+    ggplot2::xlab(paste0("PC1: ", percent_variation[1], "% variance")) +
+    ggplot2::ylab(paste0("PC2: ", percent_variation[2], "% variance")) +
+    ggplot2::labs(title = plot_title)
+pca_plot + analyzeRNA::global_theme()
+
+export_genelist(pca_data, "martinPCAdata")
 analyzeRNA::pca_analysis(
     dseq_transform = rlog_norm,
     plot_aes = plot_aes,
     plot_title = "PCA",
-    label_samples = FALSE
+    label_samples = TRUE
 )
+library(PCAtools)
+rlog_pca <- dplyr::select(rlog_df, -c(MGI_Desc))
+rlog_pca <- remove_rownames(rlog_pca)
+rlog_pca <- distinct(rlog_pca, MGI_Symbol, .keep_all = TRUE)
+rlog_pca <- dplyr::filter(rlog_pca, MGI_Symbol != "")
+rlog_pca <- column_to_rownames(rlog_pca, "MGI_Symbol")
+p <- pca(rlog_pca, meta, removeVar = 0)
+screeplot(p)
+biplot(p, showLoadings = TRUE, ntopLoadings = 10)
+pairsplot(p, components = getComponents(p, seq_len(4)), colby = "Group", colkey = c(Butyrate = "black", Control = "#359435"), pointSize = 3, shape = "Group", shapekey = c(Control = 15, Butyrate = 15), triangle = FALSE)
+plotloadings(p)
 ```
 
 ## UMAP
@@ -563,11 +600,9 @@ rlogUMAP
 
     -   *optional* change the threshold values as specified above
 
-    -
+    -   *optional*
 
-        *optional*
-
-        :   Volcano plots inputs
+        : Volcano plots inputs
 
 ```{r volcano_plots, eval=TRUE}
 analyzeRNA::volcano_plot(
@@ -774,8 +809,8 @@ downhf <- getgenelistfromgogroup(downgroup, 3)
 heatmapFromDF("Downregulated in Butyrate - Regulation of Cellular Processes", downhf, meta, rlog_df, anno_colors, gaps = c(5))
 ```
 
+Code adapted from <http://revigo.irb.hr/>
 
-Code adapted from http://revigo.irb.hr/
 ```{r revigo_plots}
 gsea_BP_revigo.names <- c("term_ID", "description", "frequency", "value", "uniqueness", "dispensability", "representative")
 gsea_BP_revigo.data <- rbind(
@@ -1408,8 +1443,8 @@ treemap(
 )
 ```
 
+GO pathways gene sets downloaded from <https://amigo.geneontology.org/>
 
-GO pathways gene sets downloaded from https://amigo.geneontology.org/
 ```{r heatmapsfromGOGroups}
 filterset <- dplyr::filter(butyrate_vs_control, Adj_P_Value <= 0.05, abs(Log2FoldChange) >= 0.3)
 filterset <- dplyr::select(filterset, MGI_Symbol)
@@ -1642,4 +1677,11 @@ heatmapFromCSV(
     clusterRows = TRUE,
     height = 8
 )
+```
+
+# CITATIONS
+
+```{r citations}
+citation("DESeq2")
+citation("pcaExplorer")
 ```
