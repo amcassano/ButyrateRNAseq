@@ -134,10 +134,11 @@ if (!require(devtools)) {
 }
 devtools::install_github("JamesJoly/DGSEA")
 devtools::install_github("amcassano/RNAseqAnalysisPackage")
+
 library(DGSEA)
 library(analyzeRNA)
-library(pcaExplorer)
 library(PCAtools)
+library(PERMANOVA)
 ```
 
 ## Set working directory
@@ -504,6 +505,7 @@ analyzeRNA::sample_distances(rlog_norm, anno_colors, meta)
 pca_data <- DESeq2::plotPCA(rlog_norm,
     intgroup = "Group", returnData = TRUE
 )
+pca_data <- select(pca_data, c(Group, PC1, PC2))
 # get the percent variation of the PCA data so that we can add that to the plot
 percent_variation <- round(100 * attr(pca_data, "percentVar"))
 labs <- plot_aes$labels
@@ -520,27 +522,43 @@ pca_plot <-
     ggplot2::scale_shape_manual(labels = labs, values = shapes, name = "Group: ") +
     ggplot2::xlab(paste0("PC1: ", percent_variation[1], "% variance")) +
     ggplot2::ylab(paste0("PC2: ", percent_variation[2], "% variance")) +
-    ggplot2::labs(title = plot_title)
+    ggplot2::labs(title = "PCA")
 pca_plot + analyzeRNA::global_theme()
 
-export_genelist(pca_data, "martinPCAdata")
-analyzeRNA::pca_analysis(
-    dseq_transform = rlog_norm,
-    plot_aes = plot_aes,
-    plot_title = "PCA",
-    label_samples = TRUE
-)
-library(PCAtools)
-rlog_pca <- dplyr::select(rlog_df, -c(MGI_Desc))
-rlog_pca <- remove_rownames(rlog_pca)
-rlog_pca <- distinct(rlog_pca, MGI_Symbol, .keep_all = TRUE)
-rlog_pca <- dplyr::filter(rlog_pca, MGI_Symbol != "")
-rlog_pca <- column_to_rownames(rlog_pca, "MGI_Symbol")
-p <- pca(rlog_pca, meta, removeVar = 0)
+# export_genelist(pca_data, "martinPCAdata")
+## Use the top 500 variables by variance as is done using the deseq2 pca function
+p <- get_pca_obj(rlog_df, meta, 0.75)
+## Use the top 500 variables by variance as is done using the deseq2 pca function
+analyzeRNA::pca_analysis(rlog_df, plot_aes, meta, varianceRemove = 0.75, draw_ellipses = FALSE)
 screeplot(p)
-biplot(p, showLoadings = TRUE, ntopLoadings = 10)
 pairsplot(p, components = getComponents(p, seq_len(4)), colby = "Group", colkey = c(Butyrate = "black", Control = "#359435"), pointSize = 3, shape = "Group", shapekey = c(Control = 15, Butyrate = 15), triangle = FALSE)
 plotloadings(p)
+
+# PERMANOVA for testing if distributions are different
+# distance matrix for pca data
+sum_squares_calc <- function(dat, vars) {
+    n <- nrow(dat)
+    dat <- dplyr::select(dat, any_of(vars))
+    dist <- dist(dat, diag = TRUE, method = "manhattan")
+    dist_sq <- dist^2
+    return(sum(dist_sq) / n)
+}
+pc_dist <- dist(select(pca_data, c("PC1", "PC2")))
+pc_dist_ctrl <- dist(select(filter(pca_data, Group == "Control"), c("PC1", "PC2")))
+pc_dist_but <- dist(select(filter(pca_data, Group == "Butyrate"), c("PC1", "PC2")))
+# sum of squares
+sst <- sum_squares_calc(pca_data, c("PC1", "PC2"))
+# variation within group
+ssw_ctrl <- sum_squares_calc(filter(pca_data, Group == "Control"), c("PC1", "PC2"))
+ssw_but <- sum_squares_calc(filter(pca_data, Group == "Butyrate"), c("PC1", "PC2"))
+ssw <- ssw_but + ssw_ctrl
+ssb <- sst - (ssw_but + ssw_ctrl)
+pseudo_f <- (ssb / (2 - 1)) / (ssw / (10 - 2))
+
+pca_transform <- PERMANOVA::IniTransform(pca_data[, 2:3])
+pca_d <- PERMANOVA::DistContinuous(pca_transform)
+pca_permanova <- PERMANOVA::PERMANOVA(pca_d, pca_data$Group, PostHoc = "fdr")
+pca_permanova
 ```
 
 ## UMAP
@@ -577,6 +595,114 @@ rlogUMAP <- analyzeRNA::umap_analysis(
 )
 
 rlogUMAP
+```
+
+## Plot Gene counts
+```{r gene_counts}
+genecounts <- function(mgi, norm_df, metadat, plot_aes, comparisons = list(), label_samples = FALSE, overlaps_allowed = 10, yaxistozero = FALSE, pval_format = "p.format", kw_hjust = 0.2, kw_vjust = 1, yaxis = "rLog Normalized Reads") {
+    norm_plotdata <- data.frame(t(norm_df[norm_df$MGI_Symbol ==
+        as.character(mgi), ]))
+    norm_plotdata <- dplyr::select(norm_plotdata, dplyr::contains("ENS"))
+    BiocGenerics::colnames(norm_plotdata) <- NULL
+    BiocGenerics::colnames(norm_plotdata) <- "norm"
+    actual_data <- as.numeric(dplyr::tally(norm_plotdata) - 2)
+    gene_info <- data.frame(t(dplyr::slice_head(norm_plotdata,
+        n = 2
+    )))
+    norm_plotdata <- dplyr::slice_tail(norm_plotdata, n = actual_data)
+    norm_plotdata <- dplyr::bind_cols(metadat, norm_plotdata)
+    norm_plotdata$norm <- as.numeric(norm_plotdata$norm)
+    yaxismax <- max(norm_plotdata$norm)
+    yaxismin <- min(norm_plotdata$norm)
+    countPlot <- ggplot2::ggplot(norm_plotdata, ggplot2::aes(
+        x = Group,
+        y = norm, color = Group, shape = Group, fill = Group
+    )) +
+        ggplot2::ggtitle(gene_info$MGI_Symbol, subtitle = gene_info$MGI_Desc) +
+        ggplot2::scale_color_manual(
+            labels = plot_aes$labels,
+            values = plot_aes$outlineID, name = "Group: "
+        ) +
+        ggplot2::scale_shape_manual(
+            labels = plot_aes$labels,
+            values = plot_aes$shapeID, name = "Group: "
+        ) +
+        ggplot2::scale_fill_manual(
+            labels = plot_aes$labels,
+            values = plot_aes$fillID, name = "Group: "
+        ) +
+        ggplot2::xlab(BiocGenerics::paste("Group")) +
+        ggplot2::ylab(yaxis) +
+        ggplot2::scale_y_continuous(n.breaks = 8)
+    if (label_samples) {
+        countPlot <- countPlot + global_theme() + ggplot2::geom_point(
+            size = 3.5,
+            stroke = 2
+        ) + ggplot2::theme(
+            axis.text.x = ggplot2::element_blank(),
+            axis.ticks.x = ggplot2::element_blank()
+        ) + add_labels(
+            norm_plotdata,
+            overlaps_allowed
+        )
+    } else {
+        countPlot <- countPlot + global_theme() + ggplot2::geom_jitter(
+            size = 3.5,
+            width = 0.1, height = 0, stroke = 2
+        ) + ggplot2::theme(
+            axis.text.x = ggplot2::element_blank(),
+            axis.ticks.x = ggplot2::element_blank(), panel.grid.major.y = ggplot2::element_line(
+                color = "gray95",
+                size = 0.25, linetype = 2
+            ), panel.grid.minor.y = ggplot2::element_line(
+                color = "gray95",
+                size = 0.25, linetype = 2
+            )
+        )
+    }
+    if (yaxistozero) {
+        countPlot <- countPlot + ggplot2::expand_limits(y = 0)
+    } else if ((yaxismin - 3) < 0) {
+        countPlot <- countPlot + ggplot2::expand_limits(y = c(
+            0,
+            yaxismax + 3
+        ))
+    } else {
+        countPlot <- countPlot + ggplot2::expand_limits(y = c(yaxismin -
+            2, yaxismax + 1))
+    }
+    countPlot <- countPlot +
+        ggpubr::stat_compare_means(
+            comparisons = comparisons,
+            vjust = 0.25, label = pval_format, # label.y.npc = "bottom",
+            size = 5 # , step.increase = 0.04
+        ) +
+        ggpubr::stat_compare_means(
+            label.y.npc = "bottom",
+            show.legend = FALSE, size = 3.75, vjust = kw_vjust, hjust = kw_hjust
+        )
+    return(countPlot)
+}
+
+genecounts("Nr4a1", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Adgre1", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Csf1r", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Cd68", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Ccr2", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Txn1", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Klf2", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Junb", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Lcp1", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
+
+genecounts("Serp1", rlog_df, meta, plot_aes, list(c("Control", "Butyrate")), kw_hjust = 1, pval_format = "p.signif")
 ```
 
 ## Volcano Plot
